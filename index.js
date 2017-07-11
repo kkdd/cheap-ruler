@@ -2,6 +2,31 @@
 
 module.exports = cheapRuler;
 
+var consts = cheapRuler.constants = {
+    RE: 6378137.0, // IS-GPS
+    FE: (1/298.257223563), //IS-GPS
+    DEGREE: Math.PI/180
+};
+consts.E2 = consts.FE * (2 - consts.FE);
+
+/**
+ * Multipliers for converting between units.
+ *
+ * @example
+ * // convert 50 meters to yards
+ * 50 * cheapRuler.units.meters / cheapRuler.units.yards;
+ */
+var factors = cheapRuler.units = {
+    meters: 1,
+    metres: 1,
+    kilometers: 1000,
+    miles: 1609.344,
+    nauticalmiles: 1852,
+    yards: 0.9144,
+    feet: 0.3048,
+    inches: 0.0254
+};
+
 /**
  * A collection of very fast approximations to common geodesic measurements. Useful for performance-sensitive code that measures things on a city scale.
  *
@@ -13,26 +38,19 @@ module.exports = cheapRuler;
  * //=ruler
  */
 function cheapRuler(lat /*: number */, units /*: ?string */) {
-    return new CheapRuler(lat, units);
+    if (lat === undefined) throw new Error('No latitude given.');
+    if (units && !factors[units]) throw new Error('Unknown unit ' + units + '. Use one of: ' + Object.keys(factors).join(', '));
+    return new CheapRuler(Math.cos(lat * consts.DEGREE), units);
 }
 
-/**
- * Multipliers for converting between units.
- *
- * @example
- * // convert 50 meters to yards
- * 50 * cheapRuler.units.yards / cheapRuler.units.meters;
- */
-var factors = cheapRuler.units = {
-    kilometers: 1,
-    miles: 1000 / 1609.344,
-    nauticalmiles: 1000 / 1852,
-    meters: 1000,
-    metres: 1000,
-    yards: 1000 / 0.9144,
-    feet: 1000 / 0.3048,
-    inches: 1000 / 0.0254
-};
+// see https://en.wikipedia.org/wiki/Geographical_distance
+function CheapRuler(coslat, units) {
+    var m = consts.DEGREE * consts.RE / factors[units ? units : 'kilometers'];
+    var w2 = 1 / (1 - consts.E2 * (1 - coslat * coslat));
+    var w = Math.sqrt(w2);
+    this.kx = m * w * coslat;
+    this.ky = m * w * w2 * (1 - consts.E2);
+}
 
 /**
  * Creates a ruler object from tile coordinates (y and z). Convenient in tile-reduce scripts.
@@ -47,26 +65,11 @@ var factors = cheapRuler.units = {
  */
 cheapRuler.fromTile = function (y, z, units) {
     var n = Math.PI * (1 - 2 * (y + 0.5) / Math.pow(2, z));
-    var lat = Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))) * 180 / Math.PI;
-    return new CheapRuler(lat, units);
+    n = 2 / (Math.exp(n) + 1) - 1;
+    var coslat = 2 / (n * n + 1) - 1;
+    return new CheapRuler(coslat, units);
 };
 
-function CheapRuler(lat, units) {
-    if (lat === undefined) throw new Error('No latitude given.');
-    if (units && !factors[units]) throw new Error('Unknown unit ' + units + '. Use one of: ' + Object.keys(factors).join(', '));
-
-    var m = units ? factors[units] : 1;
-
-    var cos = Math.cos(lat * Math.PI / 180);
-    var cos2 = 2 * cos * cos - 1;
-    var cos3 = 2 * cos * cos2 - cos;
-    var cos4 = 2 * cos * cos3 - cos2;
-    var cos5 = 2 * cos * cos4 - cos3;
-
-    // multipliers for converting longitude and latitude degrees into distance (http://1.usa.gov/1Wb1bv7)
-    this.kx = m * (111.41513 * cos - 0.09455 * cos3 + 0.00012 * cos5);
-    this.ky = m * (111.13209 - 0.56605 * cos2 + 0.0012 * cos4);
-}
 
 CheapRuler.prototype = {
     /**
@@ -99,7 +102,7 @@ CheapRuler.prototype = {
         var dx = (b[0] - a[0]) * this.kx;
         var dy = (b[1] - a[1]) * this.ky;
         if (!dx && !dy) return 0;
-        var bearing = Math.atan2(-dy, dx) * 180 / Math.PI + 90;
+        var bearing = Math.atan2(-dy, dx) / consts.DEGREE + 90;
         if (bearing > 180) bearing -= 360;
         return bearing;
     },
@@ -116,7 +119,7 @@ CheapRuler.prototype = {
      * //=point
      */
     destination: function (p, dist, bearing) {
-        var a = (90 - bearing) * Math.PI / 180;
+        var a = (90 - bearing) * consts.DEGREE;
         return this.offset(p,
             Math.cos(a) * dist,
             Math.sin(a) * dist);
